@@ -1,6 +1,6 @@
-# 🏸 Automated Court Booking & Cancellation System
+# 🏸 Automated Court Booking & Cancellation System for Condominium
 
-This project is a robust, serverless solution developed using Google Apps Script to automate the entire court booking workflow for a residential area, ensuring fairness and enforcing cancellation policies.
+This Serverless Court Scheduling System is a robust, production-ready solution actively used by the Kemuncak Condominium Section 9 Shah Alam Management and Residents, proving its reliability in a real-world environment. Built on Google Apps Script, it entirely automates the booking lifecycle, eliminating administrative overhead and conflicts. The system's core strength is its rigorous enforcement of community rules, specifically the same-day cancellation lockout policy and the use of an atomic, single-use cancellation link mechanism, ensuring all bookings and cancellations adhere strictly to defined procedures.
 
 ---
 
