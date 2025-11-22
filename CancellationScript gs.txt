@@ -1,0 +1,125 @@
+// Function to handle the initial link click (displays confirmation)
+function doGet(e) {
+  var bookingId = e.parameter.bookingId;
+  var action = e.parameter.action;
+
+  if (!bookingId) {
+    // FIX 1: Use the file for Invalid Request
+    return HtmlService.createHtmlOutputFromFile('cancellationRejected');
+  }
+
+  // If the action parameter is set to 'confirm', execute the cancellation
+  if (action === 'confirm') {
+    return cancelEvent(bookingId);
+  }
+
+  // --- Step 1: Look up event details and apply same-day check ---
+  var calendarId = "de899383d522892a718c649afc78abd12da98d4fb9202ba74945029c9280e53f@group.calendar.google.com";
+  var calendar = CalendarApp.getCalendarById(calendarId);
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("BookingIDs");
+  if (!sheet) {
+    // FIX 2: Use the file for Sheet Not Found Error
+    return HtmlService.createHtmlOutputFromFile('cancellationRejected');
+  }
+  
+  var data = sheet.getDataRange().getValues();
+  var eventId = null;
+  var rowToDelete = -1;
+  var startRow = (data[0][0] === "UniqueID" && data[0][1] === "EventID") ? 1 : 0;
+
+  for (var i = startRow; i < data.length; i++) {
+    if (data[i][0] === bookingId) {
+      eventId = data[i][1];
+      rowToDelete = i + 1;
+      break;
+    }
+  }
+
+  if (!eventId) {
+    // FIX 3: Use the file for Invalid Booking ID
+    return HtmlService.createHtmlOutputFromFile('cancellationRejected');
+  }
+
+  var event = calendar.getEventById(eventId + "@google.com");
+  
+  if (!event) {
+    // FIX 4: Use the file for Event Not Found
+    return HtmlService.createHtmlOutputFromFile('cancellationRejected');
+  }
+
+  // --- Same-Day Cancellation Rule Check (BEFORE Confirmation Page) ---
+  var eventDate = event.getStartTime();
+  var today = new Date();
+  
+  // Reset time components to midnight for accurate day-only comparison
+  eventDate.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0);
+
+  if (eventDate.getTime() <= today.getTime()) {
+    // FIX 5: Use the file for Same-Day Rejection
+    // The content of the file explains both reasons (Same-Day and Invalid ID)
+    return HtmlService.createHtmlOutputFromFile('cancellationRejected');
+  }
+  // --- End Rule Check ---
+
+  // --- Step 2: Show Confirmation Page ---
+  var template = HtmlService.createTemplateFromFile('ConfirmPage');
+  template.bookingId = bookingId;
+  template.courtType = event.getTitle().replace(' – Booked', ''); // e.g. "Tennis"
+  template.date = event.getStartTime().toLocaleDateString();
+  template.time = event.getStartTime().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' - ' + 
+                  event.getEndTime().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  
+  return template.evaluate().setTitle('Confirm Cancellation');
+}
+
+
+// New function to perform the actual deletion
+function cancelEvent(bookingId) {
+  try {
+    var calendarId = "de899383d522892a718c649afc78abd12da98d4fb9202ba74945029c9280e53f@group.calendar.google.com";
+    var calendar = CalendarApp.getCalendarById(calendarId);
+
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("BookingIDs");
+    if (!sheet) {
+      // FIX 6: Use the file for Sheet Not Found Error (in cancelEvent)
+      return HtmlService.createHtmlOutputFromFile('cancellationRejected');
+    }
+
+    var data = sheet.getDataRange().getValues();
+    var eventId = null;
+    var rowToDelete = -1;
+    var startRow = (data[0][0] === "UniqueID" && data[0][1] === "EventID") ? 1 : 0;
+
+    for (var i = startRow; i < data.length; i++) {
+      if (data[i][0] === bookingId) {
+        eventId = data[i][1];
+        rowToDelete = i + 1;
+        break;
+      }
+    }
+
+    if (eventId) {
+      var event = calendar.getEventById(eventId + "@google.com");
+      
+      // Perform final check before deletion (in case of double-click after confirmation)
+      if (event) {
+        event.deleteEvent();
+        if (rowToDelete !== -1) {
+          sheet.deleteRow(rowToDelete);
+        }
+        return HtmlService.createHtmlOutputFromFile('SuccessPage');
+      } else {
+        // FIX 7: Use the file for Event Not Found / Already Canceled
+        return HtmlService.createHtmlOutputFromFile('cancellationRejected');
+      }
+    } else {
+      // FIX 8: Use the file for Invalid Booking ID
+      return HtmlService.createHtmlOutputFromFile('cancellationRejected');
+    }
+  } catch (error) {
+    Logger.log("Error during cancellation: " + error.toString());
+    // FIX 9: Use the file for Generic Failure
+    return HtmlService.createHtmlOutputFromFile('cancellationRejected');
+  }
+}

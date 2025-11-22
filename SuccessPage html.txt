@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        text-align: center;
+        margin-top: 100px;
+        background-color: #f4f4f9;
+        color: #333;
+      }
+      .container {
+        max-width: 500px;
+        margin: auto;
+        padding: 40px;
+        background-color: #fff;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        color: #4CAF50;
+        font-size: 2.5em;
+        margin-bottom: 10px;
+      }
+      p {
+        font-size: 1.1em;
+        line-height: 1.6;
+        color: #555;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>✅ Booking Canceled</h1>
+      <p>Your court booking has been successfully canceled and removed from the calendar.</p>
+    </div>
+  </body>
+</html>

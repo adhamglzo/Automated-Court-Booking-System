@@ -1,0 +1,448 @@
+// Define the Hardcoded Script URL here to fix caching issues.
+// This MUST match the URL of your current, active Web App deployment.
+const HARDCODED_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyYdgv4TvzBqOVlX2frFeceQFtExD4OswRYYwqtKxT7kN5SO2D4cnWJ_ybxyGaS9QU7/exec";
+
+
+// --- NEW HELPER FUNCTION FOR UNIT ID STANDARDIZATION ---
+/**
+ * Standardizes the Unit ID to a fixed 6-digit string format (e.g., 350510).
+ * This matches the expected format in the Defaulter List sheet.
+ * @param {string} block 
+ * @param {string} floor 
+ * @param {string} unit 
+ * @returns {string} The standardized 6-digit unit ID.
+ */
+function standardizeUnitID(block, floor, unit) {
+  // Pad the floor and unit parts with leading zeros to ensure 2 digits
+  // The block is assumed to already be 2 digits (e.g., "35").
+  const paddedFloor = String(floor).padStart(2, '0');
+  const paddedUnit = String(unit).padStart(2, '0');
+  
+  // Return the concatenated 6-digit ID (e.g., "35" + "05" + "10" = "350510")
+  return String(block) + paddedFloor + paddedUnit;
+}
+
+
+// --- NEW HELPER FUNCTION TO READ DEFAULTER LIST ---
+/**
+ * Reads the 'Defaulter List' sheet and returns a set of unique standardized 6-digit Unit IDs.
+ * Unit IDs are assumed to be in Column A.
+ * @returns {Set<string>} A Set of defaulted 6-digit Unit IDs (e.g., "350510").
+ */
+function getDefaulterUnits() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Defaulter List");
+  const defaulterUnits = new Set();
+
+  if (!sheet) {
+    Logger.log("WARNING: 'Defaulter List' sheet not found. Skipping defaulter check.");
+    return defaulterUnits;
+  }
+
+  // Get values from A2 to the last populated row in column A
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    return defaulterUnits; // No data found
+  }
+
+  const unitValues = sheet.getRange("A2:A" + lastRow).getValues();
+
+  // Clean and add units to the Set. Since the sheet is 6-digit, we just trim/string-convert them.
+  unitValues.forEach(row => {
+    const unitId = String(row[0]).trim();
+    if (unitId && unitId.length === 6 && !isNaN(unitId)) { // Ensure it's a valid 6-digit number
+      defaulterUnits.add(unitId);
+    }
+  });
+
+  return defaulterUnits;
+}
+// --- END NEW HELPER FUNCTION ---
+
+
+// Function to handle form submission (triggered by Google Form)
+function onFormSubmit(e) {
+  var row = e.values;
+
+  // 1. Extract Form Data
+  var fullName      = row[1]; // B
+  var block         = row[2]; // C
+  var floor         = row[3]; // D
+  var unit          = row[4]; // E
+  var phone         = row[5]; // F
+  var courtType     = row[6]; // G (e.g., "Tennis", "Pickleball A", "Pickleball B", "Badminton")
+  var startTime     = row[7]; // H // This is the raw time string from the form
+  var date          = row[8]; // I
+  var email         = row[9]; // J
+
+  // Calculate the Unit ID using the new standardized 6-digit format (e.g., 350510)
+  var unitID = standardizeUnitID(block, floor, unit);
+  
+  // --- NEW: DEFAULTER LIST CHECK (PRIORITY 1) ---
+  const defaulterUnits = getDefaulterUnits();
+  if (defaulterUnits.has(unitID)) {
+    Logger.log("Rejected booking for " + fullName + " – Unit " + unitID + " is on the defaulter list.");
+    
+    // --- Send Defaulter Rejection Email ---
+    var timezone = Session.getScriptTimeZone();
+    var bookingDateFormatted = Utilities.formatDate(new Date(date + " " + startTime), timezone, "d MMM yyyy");
+    
+    GmailApp.sendEmail(
+      email,
+      "❌Court Booking Rejected – Unit on Defaulter List",
+      "Hi " + fullName + ",\n\n" +
+      // IMPORTANT: Display the Unit ID in the zero-padded, hyphenated format for user readability in the email.
+      "Rejected: Your unit (" + block + "-" + String(floor).padStart(2, '0') + "-" + String(unit).padStart(2, '0') + ") is currently on the defaulter list.\n\n" +
+      "This action prevents any new court bookings from being accepted until the outstanding matter is resolved.\n\n" +
+      "Booking Details:\n" +
+      "• Court: " + courtType + "\n" +
+      "• Date: " + bookingDateFormatted + "\n" +
+      "• Time: " + Utilities.formatDate(new Date(date + " " + startTime), timezone, "h:mm a") + "\n\n" +
+      "Please contact the management office to clear your status and resume booking privileges.\n\n" + 
+      "Regards,\nKemuncak Condominium Court Booking System"
+    );
+    return; // Exit the function immediately
+  }
+  // --- END DEFAULTER CHECK ---
+
+  // Define the Calendar ID
+  var CALENDAR_ID = "de899383d522892a718c649afc78abd12da98d4fb9202ba74945029c9280e53f@group.calendar.google.com";
+  var calendar = CalendarApp.getCalendarById(CALENDAR_ID);
+  
+  if (!calendar) {
+    Logger.log("Error: Calendar not found for ID: " + CALENDAR_ID);
+    GmailApp.sendEmail(email, "Booking Error", "Sorry, an internal error occurred: Calendar not found.");
+    return;
+  }
+
+  // Build full datetime for booking (1 hour duration)
+  var startDateTime = new Date(date + " " + startTime);
+  var endDateTime   = new Date(startDateTime.getTime() + 60 * 60 * 1000); // Add 1 hour
+
+  // Get Timezone for consistent formatting
+  var timezone = Session.getScriptTimeZone();
+  
+  // --- Weekly booking limit check (per unit only, 3 max per group) ---
+  var limit = 3; // 3 slots for Shared Court, 3 slots for Badminton
+  
+  var startOfWeek = new Date(startDateTime);
+  startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay()); // Sunday
+  startOfWeek.setHours(0, 0, 0, 0);
+
+  var endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(endOfWeek.getDate() + 6); // Saturday
+  endOfWeek.setHours(23, 59, 59, 999);
+  
+  // Calculate the day the limit resets (End of Week + 1 day)
+  var resetDate = new Date(endOfWeek.getTime() + 24 * 60 * 60 * 1000); 
+  var resetDay = Utilities.formatDate(resetDate, timezone, "EEEE"); 
+
+  var weeklyEvents = calendar.getEvents(startOfWeek, endOfWeek);
+  
+  // --- Calculate Bookings for Both Categories ---
+  var sharedCourtBookingsCount = 0;
+  var badmintonBookingsCount = 0;
+  var reminderText = "";
+  
+  // 1. Calculate Shared Court Bookings (Tennis/Pickleball)
+  // Check description using the standardized unitID (e.g., "350510")
+  sharedCourtBookingsCount = weeklyEvents.filter(function(ev) {
+    var title = ev.getTitle();
+    return ev.getDescription().includes("Unit: " + unitID) && 
+           (title.includes("Tennis") || title.includes("Pickleball"));
+  }).length;
+  
+  // 2. Calculate Badminton Bookings
+  // Check description using the standardized unitID (e.g., "350510")
+  badmintonBookingsCount = weeklyEvents.filter(function(ev) {
+    var title = ev.getTitle();
+    return ev.getDescription().includes("Unit: " + unitID) && 
+           title.includes("Badminton");
+  }).length;
+  
+  // Determine the category and reminder text based on the current request
+  var isBadmintonBooking = courtType === "Badminton";
+  var bookingCategory = isBadmintonBooking ? "Badminton" : "Court (Tennis/Pickleball)";
+  
+  if (isBadmintonBooking) {
+    reminderText = "It is advisable to bring your own bats and shuttles.";
+  } else {
+    reminderText = "It is advisable to bring your own bats and balls. You can rent equipment for RM15.";
+  }
+  
+  // Identify the count relevant to the current request (before booking)
+  var currentCategoryBookingCount = isBadmintonBooking ? badmintonBookingsCount : sharedCourtBookingsCount;
+  var otherCategoryBookingCount = isBadmintonBooking ? sharedCourtBookingsCount : badmintonBookingsCount;
+  var otherCategoryName = isBadmintonBooking ? "Court (Tennis/Pickleball)" : "Badminton";
+
+
+  // Date/Time Formatting for emails
+  var bookingDateFormatted = Utilities.formatDate(startDateTime, timezone, "d MMM yyyy");
+  var startOfWeekFormatted = Utilities.formatDate(startOfWeek, timezone, "d MMM yy");
+  var endOfWeekFormatted = Utilities.formatDate(endOfWeek, timezone, "d MMM yy");
+  var weekRange = startOfWeekFormatted + " to " + endOfWeekFormatted;
+  var startTimeFormatted = Utilities.formatDate(startDateTime, timezone, "h:mm a");
+  var endTimeFormatted = Utilities.formatDate(endDateTime, timezone, "h:mm a"); 
+
+  // --- LOGGING FOR DEBUGGING ---
+  Logger.log("Weekly check for Unit: " + unitID + " in Category: " + bookingCategory);
+  Logger.log("Existing bookings found: " + currentCategoryBookingCount + ". Limit: " + limit);
+  // --- END LOGGING ---
+
+  // --- 1. Weekly Limit Check (UPDATED TEXT) ---
+  if (currentCategoryBookingCount >= limit) {
+    // Calculate slots left for the other (non-rejected) category
+    var otherCategorySlotsLeft = limit - otherCategoryBookingCount;
+    var currentCategorySlotsLeft = 0; // The current category is full
+
+    // Build the status message for the full category
+    var currentCategoryStatus = bookingCategory + " Slots Left: " + currentCategorySlotsLeft + "/" + limit + " (No slots left)";
+    // Build the status message for the other category
+    var otherCategoryStatus = otherCategoryName + " Slots Left: " + otherCategorySlotsLeft + "/" + limit;
+    
+    GmailApp.sendEmail(
+      email,
+      "❌Court Booking Rejected – Weekly Limit Reached",
+      "Hi " + fullName + ",\n\n" +
+      "Rejected: Your unit (" + block + "-" + String(floor).padStart(2, '0') + "-" + String(unit).padStart(2, '0') + ") has reached the " + limit + "-slot weekly limit for " + bookingCategory + " bookings for the week of " + weekRange + ".\n\n" +
+      "You have **no** remaining slots for the " + bookingCategory + " category this week.\n\n" + 
+      
+      "Current Weekly Status:\n" +
+      "• " + currentCategoryStatus + "\n" + // Uses (No slots left)
+      "• " + otherCategoryStatus + "\n\n" +
+
+      "Please try again next week.\n" + 
+      "Note: Your weekly limit resets every " + resetDay + " at midnight.\n\n" + 
+      "Regards,\nKemuncak Condominium Court Booking System"
+    );
+    Logger.log("Rejected booking for " + fullName + " – " + bookingCategory + " weekly limit reached (" + unitID + ")");
+    return;
+  }
+
+  // --- 2. Slot availability check (Conflict Logic) ---
+  var existingEvents = calendar.getEvents(startDateTime, endDateTime);
+  var slotTaken = false;
+  var conflictReason = "";
+
+  if (existingEvents.length > 0) {
+    var existingTitles = existingEvents.map(ev => ev.getTitle());
+    
+    // Logic for Badminton (Independent Court)
+    if (courtType === "Badminton") {
+      // Badminton only conflicts with other Badminton bookings
+      if (existingTitles.some(title => title.includes("Badminton"))) {
+        slotTaken = true;
+        conflictReason = "Rejected: The Badminton court is already booked for this time slot.";
+      }
+    } 
+    // Logic for Tennis and Pickleball (Existing Shared Court Rules)
+    else if (courtType === "Tennis") {
+      // Tennis is exclusive. If ANY shared court (Tennis, Pickle A, or Pickle B) is booked, reject.
+      if (existingTitles.some(title => title.includes("Tennis") || title.includes("Pickleball A") || title.includes("Pickleball B"))) {
+          slotTaken = true;
+          conflictReason = "Rejected: The entire shared court is already in use (booked for Tennis or Pickleball) at this time.";
+      }
+    } else if (courtType.startsWith("Pickleball")) {
+      // If the new booking is Pickleball (e.g., "Pickleball A"):
+      
+      // Conflict 1: If Tennis is booked, reject (Tennis blocks all Pickleball).
+      if (existingTitles.some(title => title.includes("Tennis"))) {
+        slotTaken = true;
+        conflictReason = "Rejected: This time slot is blocked because the full Tennis court is already booked.";
+      }
+      
+      // Conflict 2: If the *same* specific Pickleball court is booked, reject.
+      if (!slotTaken && existingTitles.some(title => title.includes(courtType))) {
+        slotTaken = true;
+        conflictReason = "Rejected: " + courtType + " is already booked for this time slot.";
+      }
+    }
+  }
+
+  // --- Send Rejection Email if conflict found ---
+  if (slotTaken) {
+    // Calculate slots left for both categories (no change to count as booking was rejected)
+    var sharedSlotsLeft = limit - sharedCourtBookingsCount;
+    var badmintonSlotsLeft = limit - badmintonBookingsCount;
+    
+    GmailApp.sendEmail(
+      email,
+      "❌Court Booking Rejected – Slot Taken",
+      "Hi " + fullName + ",\n\n" +
+      conflictReason + "\n\n" +
+      "This applies to the week of " + weekRange + ".\n\n" +
+      "Please try another available time. Check the full calendar for availability.\n\n" + 
+      
+      "Current Weekly Status:\n" +
+      "• Court (Tennis/Pickleball) Slots Left: " + sharedSlotsLeft + "/" + limit + "\n" +
+      "• Badminton Slots Left: " + badmintonSlotsLeft + "/" + limit + "\n\n" +
+      
+      "Regards,\nKemuncak Condominium Court Booking System"
+    );
+    Logger.log("Rejected booking for " + fullName + " (" + courtType + ") – " + conflictReason);
+    return;
+  }
+
+  // --- 3. Free → Create booking ---
+  var event = calendar.createEvent(
+    courtType + " – Booked",      // Public-safe title (no personal details)
+    startDateTime,
+    endDateTime,
+    {
+      description: "Booked by: " + fullName +
+             "\nUnit: " + unitID +  // <--- NOW SAVING THE 6-DIGIT STANDARDIZED ID
+             "\nPhone: " + phone + 
+             "\nEmail: " + email, // Include more details for internal use
+      guests: email,
+      sendInvites: true,
+      conferenceData: {
+        entryPoints: [] // Remove Google Meet link
+      }
+    }
+  );
+  
+  // --- Create and save a unique ID for cancellation ---
+  var uniqueId = Utilities.getUuid();
+  var eventId = event.getId().split('@')[0]; 
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("BookingIDs"); 
+
+  // Make sure the sheet exists, if not, create it.
+  if (!sheet) {
+    sheet = ss.insertSheet("BookingIDs");
+    sheet.appendRow(["uniqueId", "eventId"]);
+    Logger.log("Created missing 'BookingIDs' sheet.");
+  }
+  
+  sheet.appendRow([uniqueId, eventId]);
+  SpreadsheetApp.flush();
+  
+  // --- Create the cancellation URL to be sent in the email (UPDATED) ---
+  var cancelUrl = HARDCODED_SCRIPT_URL + "?bookingId=" + uniqueId;
+  
+  // --- Create the Calendar View/Subscription URL ---
+  var calendarViewUrl = "https://calendar.google.com/calendar/r?cid=" + CALENDAR_ID;
+  
+  // Recalculate slots left based on the NEW booking
+  // Subtract 1 from the slot count of the category that was just booked
+  var sharedSlotsLeft = limit - (isBadmintonBooking ? sharedCourtBookingsCount : sharedCourtBookingsCount + 1);
+  var badmintonSlotsLeft = limit - (isBadmintonBooking ? badmintonBookingsCount + 1 : badmintonBookingsCount);
+
+  // --- 4. Send Confirmation Email (Enhanced) ---
+  GmailApp.sendEmail(
+    email,
+    "✅Court Booking Confirmed (Ref: " + uniqueId.substring(0, 6) + ")",
+    "Hi " + fullName + ",\n\n" +
+    "Your booking has been confirmed!\n\n" +
+    "Booking Details:\n" +
+    "• Court: " + courtType + "\n" +
+    "• Date: " + bookingDateFormatted + "\n" +
+    "• Time: " + startTimeFormatted + " – " + endTimeFormatted + "\n" +
+    "• Unit: " + block + "-" + String(floor).padStart(2, '0') + "-" + String(unit).padStart(2, '0') + "\n" + // Display in the zero-padded, hyphenated format for user
+    "• Location: Tennis Court Kemuncak Condominium Section 9 Shah Alam\n\n" + 
+    
+    // Reminder Section (Uses dynamic text)
+    "Reminder:\n" +
+    reminderText + "\n\n" +
+    
+    // Display status for both limits
+    "Weekly Limit Status (Week of " + weekRange + "):\n" +
+    "• Court (Tennis/Pickleball) Slots Left: " + sharedSlotsLeft + "/" + limit + "\n" +
+    "• Badminton Slots Left: " + badmintonSlotsLeft + "/" + limit + "\n\n" +
+    
+    "Action Links:\n" +
+    "• View Full Calendar: " + calendarViewUrl + "\n" +
+    "• Cancel Booking: " + cancelUrl + "\n\n" +
+    
+    "Cancellation Warning: Cancellations are NOT permitted on the same calendar day as your booking. Otherwise, clicking the link above will take you to a final confirmation page.\n\n" + 
+    
+    "Enjoy your game!" +
+    " Regards,\nKemuncak Condominium Court Booking System"
+  );
+
+
+  Logger.log("Booking confirmed: " + event.getTitle() + " (Unique ID: " + uniqueId + ")");
+}
+
+// Function to serve HTML on Web App execution
+function doGet(e) {
+  // Check for the unique bookingId in the URL parameters
+  if (e.parameter.bookingId) {
+    // If an ID exists, we render the confirmation page (ConfirmPage.html)
+    var template = HtmlService.createTemplateFromFile('ConfirmPage');
+    template.bookingId = e.parameter.bookingId;
+    
+    // We need to fetch the event details to display them on the confirmation page
+    var details = getEventDetails(e.parameter.bookingId);
+    if (!details) {
+      // Render the Invalid Booking ID page if not found
+      return HtmlService.createHtmlOutputFromFile('InvalidBookingID').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    }
+    
+    template.courtType = details.courtType;
+    template.date = details.date;
+    template.time = details.time;
+
+    return template.evaluate()
+      .setTitle('Confirm Cancellation')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+  
+  // If no booking ID is provided, redirect to the main form/calendar view
+  return HtmlService.createHtmlOutput('<h1>Welcome</h1><p>This script is used for booking cancellation.</p>').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+/**
+ * Helper function to retrieve event details from a unique ID.
+ * Returns null if the ID or event is not found.
+ */
+function getEventDetails(uniqueId) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("BookingIDs");
+  if (!sheet) return null;
+
+  var data = sheet.getDataRange().getValues();
+  var eventRow = null;
+
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === uniqueId) {
+      eventRow = data[i];
+      break;
+    }
+  }
+
+  if (!eventRow) return null; // Unique ID not found
+
+  var eventId = eventRow[1];
+  var CALENDAR_ID = "de899383d522892a718c649afc78abd12da98d4fb9202ba74945029c9280e53f@group.calendar.google.com";
+  var calendar = CalendarApp.getCalendarById(CALENDAR_ID);
+  
+  try {
+    var event = calendar.getEventById(eventId + '@google.com');
+    
+    // Check for same-day cancellation rule:
+    var startTime = event.getStartTime();
+    var today = new Date();
+    today.setHours(0, 0, 0, 0); 
+    
+    if (startTime.getTime() <= today.getTime() + 24 * 60 * 60 * 1000) {
+      // If the event starts less than 24 hours from today, it's rejected (same-day rule).
+      
+      // We don't need to reject here, just return the data. The cancellation script will handle the rejection.
+    }
+    
+    var timezone = Session.getScriptTimeZone();
+    
+    return {
+      eventId: eventId,
+      courtType: event.getTitle().replace(" – Booked", ""),
+      date: Utilities.formatDate(startTime, timezone, "dd/MM/yyyy"),
+      time: Utilities.formatDate(startTime, timezone, "HH:mm") + " – " + Utilities.formatDate(event.getEndTime(), timezone, "HH:mm")
+    };
+    
+  } catch (e) {
+    Logger.log("Error retrieving event ID " + eventId + ": " + e);
+    return null; // Event found in sheet but not in calendar (likely already deleted/expired)
+  }
+}

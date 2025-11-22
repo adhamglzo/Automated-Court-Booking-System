@@ -1,0 +1,11 @@
+// This simple function does nothing except access the Gmail service, 
+// which forces Google to ask the user for permission.
+function forceAuthorization() {
+  // Try to access the user's email address using the session service
+  var email = Session.getActiveUser().getEmail(); 
+  Logger.log("Successfully accessed user email: " + email);
+  
+  // Try to access the Calendar service to verify access
+  var calendars = CalendarApp.getAllCalendars();
+  Logger.log("Successfully accessed " + calendars.length + " calendars.");
+}
